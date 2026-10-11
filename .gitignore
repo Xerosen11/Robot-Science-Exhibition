@@ -1,0 +1,13 @@
+﻿# Build & binary outputs
+build/
+*.bin
+*.elf
+*.hex
+
+# IDE / OS cache
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
