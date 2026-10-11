@@ -20,7 +20,7 @@
 
 ---
 
-## 5. Circuit and Circuit Diagram
+## 2. Circuit and Circuit Diagram
 *Currently on work.*
  
 ---
