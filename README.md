@@ -6,7 +6,7 @@
 ---
 
 >Copyright (c) 2026 Harsh Tirkey
-## 1. Hardware & Bill of Materials (BOM)
+## 1. Hardware & Bill of Materials 
 
 | Component | Specification / Model | Quantity | Price |
 | :--- | :--- | :--- | :--- |
