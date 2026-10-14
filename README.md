@@ -23,6 +23,14 @@
 
 ---
 
+## 2. Students working on this project.
+* Harsh Tirkey
+* Nikhil Bhengra
+* Nayan Nayak
+* Rimil Kerketta
+* Priyanshu Bhagat
+* Shraddha Shrama
+
 ## 2. Circuit and Circuit Diagram
 *Currently on work.*
  
