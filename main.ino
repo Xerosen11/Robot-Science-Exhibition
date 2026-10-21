@@ -1,268 +1,320 @@
-// main.ino
+
 #include <WiFi.h>
-#include <esp_camera.h>
-#include <esp_http_server.h>
-#include <ESP32Servo.h>
+#include <WebServer.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-#include <driver/i2s_std.h>
-#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include "driver/i2s.h"
 
-#include "camera_pins.h"
-#include "web_interface.h"
+// ===== YOUR HOTSPOT =====
+const char* WIFI_SSID = "YOUR_PHONE_HOTSPOT";
+const char* WIFI_PASS = "YOUR_HOTSPOT_PASSWORD";
 
-// --- Pin Definitions ---
-// L298N Motors
-#define IN1 1
-#define IN2 2
-#define ENA 3
-#define IN3 41
-#define IN4 42
-#define ENB 40
+// ===== YOUR EXACT PINOUT =====
+#define OLED_SDA 21
+#define OLED_SCL 22
 
-// Servos
-#define HEAD_SERVO_PIN 47
-#define ARM_SERVO_PIN 48
+#define I2S_BCLK 26
+#define I2S_LRC  25
+#define I2S_DOUT 33
 
-// OLED I2C
-#define OLED_SDA 38
-#define OLED_SCL 39
-#define OLED_ADDR 0x3C
+#define TRIG_PIN 5
+#define ECHO_PIN 18
+
+#define SERVO1_PIN 13
+#define SERVO2_PIN 14
+
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 
-// Audio (I2S)
-#define I2S_MIC_WS   14
-#define I2S_MIC_SCK  21
-#define I2S_MIC_SD   13
-#define I2S_SPK_WS   43
-#define I2S_SPK_BCLK 44
-#define I2S_SPK_DIN  45
+Adafruit_SSD1306 display(
+  SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1
+);
+WebServer server(80);
 
-// --- Globals & IPC Objects ---
-Servo headServo;
-Servo armServo;
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
-httpd_handle_t stream_httpd = NULL;
+String mood = "neutral";
+String expression = "idle";
+String lastMessage = "Hello! I am ready.";
+int intensity = 50;
 
-enum RobotState { IDLE, DRIVING, LISTENING, AI_SPEAKING };
-volatile RobotState currentState = IDLE;
+const char PAGE[] PROGMEM = R"HTML(
+<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Robot AI</title>
+<style>
+body{font-family:Arial;background:#101827;color:white;
+padding:18px;max-width:600px;margin:auto}
+textarea,input,button{box-sizing:border-box;width:100%;
+padding:13px;margin:7px 0;border-radius:10px;border:0}
+button{background:#40c4ff;font-weight:bold}
+pre{white-space:pre-wrap;background:#202d40;padding:12px;
+border-radius:10px}
+</style>
+</head>
+<body>
+<h2>🤖 Gemini Robot Control</h2>
+<p>Enter your Gemini API key. Keep this page on your trusted
+phone hotspot; don't share the key or expose the ESP32 server publicly.</p>
+<input id="key" type="password" placeholder="Gemini API key">
+<textarea id="msg" rows="3" placeholder="Talk to your robot..."></textarea>
+<button onclick="sendMsg()">Send to robot</button>
+<button onclick="listen()">🎙️ Speak (supported browsers)</button>
+<pre id="out">Robot ready.</pre>
+<script>
+const $=id=>document.getElementById(id);
 
-volatile int motorLeft = 0;
-volatile int motorRight = 0;
-volatile int headAngle = 90;
-volatile int armAngle = 90;
-volatile unsigned long lastCommandTime = 0;
-volatile bool pttActive = false;
-
-// Task Handles
-TaskHandle_t Core0Task;
-TaskHandle_t Core1Task;
-
-const char* ssid = "WiFiname";
-const char* password = "Password";
-
-// --- FreeRTOS Tasks ---
-
-// CORE 0: Network, HTTP, Camera Stream, AI Audio Pipeline
-void TaskCore0(void *pvParameters) {
-    // 1. Initialize Camera
-    camera_config_t config;
-    config.ledc_channel = LEDC_CHANNEL_0;
-    config.ledc_timer = LEDC_TIMER_0;
-    config.pin_d0 = Y2_GPIO_NUM; config.pin_d1 = Y3_GPIO_NUM; config.pin_d2 = Y4_GPIO_NUM;
-    config.pin_d3 = Y5_GPIO_NUM; config.pin_d4 = Y6_GPIO_NUM; config.pin_d5 = Y7_GPIO_NUM;
-    config.pin_d6 = Y8_GPIO_NUM; config.pin_d7 = Y9_GPIO_NUM; config.pin_xclk = XCLK_GPIO_NUM;
-    config.pin_pclk = PCLK_GPIO_NUM; config.pin_vsync = VSYNC_GPIO_NUM; config.pin_href = HREF_GPIO_NUM;
-    config.pin_sccb_sda = SIOD_GPIO_NUM; config.pin_sccb_scl = SIOC_GPIO_NUM;
-    config.pin_pwdn = PWDN_GPIO_NUM; config.pin_reset = RESET_GPIO_NUM;
-    config.xclk_freq_hz = 20000000;
-    config.pixel_format = PIXFORMAT_JPEG;
-    config.frame_size = FRAMESIZE_QVGA;
-    config.jpeg_quality = 12;
-    config.fb_count = 2;
-    config.fb_location = CAMERA_FB_IN_PSRAM;
-    esp_camera_init(&config);
-
-    // 2. Initialize Wi-Fi with Fallback
-    WiFi.begin(ssid, password);
-    unsigned long startAttempt = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 10000) {
-        vTaskDelay(500 / portTICK_PERIOD_MS);
-    }
-    
-    if (WiFi.status() != WL_CONNECTED) {
-        WiFi.disconnect();
-        WiFi.mode(WIFI_AP);
-        WiFi.softAP("RoboExhibition", "12345678");
-    }
-    
-    // 3. Start HTTP Server for UI and Stream
-    startCameraServer();
-
-    // 4. Core 0 Loop (Audio Pipeline & Watchdogs)
-    while (true) {
-        if (pttActive) {
-            currentState = LISTENING;
-            // -- Audio Pipeline Placeholder --
-            // 1. Read from INMP441 via standard IDF I2S RX
-            // 2. Buffer 16-bit PCM data
-            // 3. Initiate HTTPS multipart/form-data POST to AI endpoint
-            // 4. Switch currentState to AI_SPEAKING
-            // 5. Stream decoded PCM to MAX98357A via IDF I2S TX
-            // --------------------------------
-            pttActive = false; 
-            currentState = IDLE;
-        }
-        vTaskDelay(10 / portTICK_PERIOD_MS);
-    }
+async function sendMsg(){
+ const key=$('key').value.trim();
+ const msg=$('msg').value.trim();
+ if(!key||!msg){$('out').textContent='Enter an API key and message.';return;}
+ $('out').textContent='Thinking...';
+ try{
+  const r=await fetch(
+   'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
+   {method:'POST',
+    headers:{'Content-Type':'application/json','x-goog-api-key':key},
+    body:JSON.stringify({contents:[{parts:[{text:
+      'You are a friendly expressive robot. Reply concisely. '+
+      'Return ONLY JSON: {"reply":"spoken response","emotion":"happy|sad|angry|surprised|neutral","mood":"playful|calm|excited|curious","intensity":50}. User says: '+msg
+    }]}]})
+  );
+  const data=await r.json();
+  if(!r.ok)throw Error(data.error?.message||'Gemini request failed');
+  const raw=data.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join('')||'';
+  const clean=raw.replace(/```json|```/g,'').trim();
+  let obj;
+  try{obj=JSON.parse(clean)}catch{obj={reply:raw,emotion:'neutral',mood:'calm',intensity:50}}
+  $('out').textContent=obj.reply||raw;
+  await fetch('/mood',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({emotion:obj.emotion||'neutral',mood:obj.mood||'calm',
+   intensity:obj.intensity||50,reply:obj.reply||raw})});
+  await speak(key,obj.reply||raw);
+ }catch(e){$('out').textContent='Error: '+e.message}
 }
 
-// CORE 1: Hardware PWM, OLED UI, and Safety Failsafe
-void TaskCore1(void *pvParameters) {
-    // 1. Init OLED
-    Wire.begin(OLED_SDA, OLED_SCL);
-    display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR);
-    display.clearDisplay();
-    display.display();
-
-    // 2. Init Servos
-    headServo.setPeriodHertz(50);
-    armServo.setPeriodHertz(50);
-    headServo.attach(HEAD_SERVO_PIN, 500, 2400);
-    armServo.attach(ARM_SERVO_PIN, 500, 2400);
-
-    // 3. Init Motor Pins
-    pinMode(IN1, OUTPUT); pinMode(IN2, OUTPUT); pinMode(ENA, OUTPUT);
-    pinMode(IN3, OUTPUT); pinMode(IN4, OUTPUT); pinMode(ENB, OUTPUT);
-
-    // 4. Core 1 Loop
-    while (true) {
-        // Motor Failsafe: Stop motors if no command in 1.5s
-        if (millis() - lastCommandTime > 1500) {
-            motorLeft = 0;
-            motorRight = 0;
-            currentState = (currentState == DRIVING) ? IDLE : currentState;
-        }
-
-        // Apply Motor PWM
-        digitalWrite(IN1, motorLeft > 0 ? HIGH : LOW);
-        digitalWrite(IN2, motorLeft < 0 ? HIGH : LOW);
-        analogWrite(ENA, abs(motorLeft) * 255); // Requires Core v3.x analogWrite
-
-        digitalWrite(IN3, motorRight > 0 ? HIGH : LOW);
-        digitalWrite(IN4, motorRight < 0 ? HIGH : LOW);
-        analogWrite(ENB, abs(motorRight) * 255);
-
-        // Apply Servos
-        headServo.write(headAngle);
-        armServo.write(armAngle);
-
-        // Update OLED Status
-        updateOLED(currentState);
-
-        vTaskDelay(20 / portTICK_PERIOD_MS); // 50Hz refresh
+async function speak(key,text){
+ $('out').textContent+='\\nGenerating voice...';
+ try{
+  const r=await fetch(
+   'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent',
+   {method:'POST',
+    headers:{'Content-Type':'application/json','x-goog-api-key':key},
+    body:JSON.stringify({
+     contents:[{parts:[{text:'Say naturally and warmly: '+text}]}],
+     generationConfig:{
+      responseModalities:['AUDIO'],
+      speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName:'Kore'}}}
+     }
+    })
+   });
+  const data=await r.json();
+  if(!r.ok)throw Error(data.error?.message||'TTS request failed');
+  const part=data.candidates?.[0]?.content?.parts?.find(p=>p.inlineData?.data);
+  if(!part)throw Error('No audio returned. Check the TTS model and API access.');
+  let bytes=Uint8Array.from(atob(part.inlineData.data),c=>c.charCodeAt(0));
+  // Gemini TTS commonly returns raw 24 kHz, mono, signed 16-bit PCM.
+  // Strip a WAV header if the returned bytes contain one.
+  if(bytes.length>44&&String.fromCharCode(...bytes.slice(0,4))==='RIFF'){
+    let pos=12;
+    while(pos+8<=bytes.length){
+      const id=String.fromCharCode(...bytes.slice(pos,pos+4));
+      const size=bytes[pos+4]|(bytes[pos+5]<<8)|(bytes[pos+6]<<16)|(bytes[pos+7]<<24);
+      if(id==='data'){bytes=bytes.slice(pos+8,pos+8+size);break}
+      pos+=8+size;
     }
+  }
+  // Send sequential chunks to ESP32. Basic prototype; gaps may occur.
+  const chunkSize=4096;
+  for(let i=0;i<bytes.length;i+=chunkSize){
+   const chunk=bytes.slice(i,Math.min(i+chunkSize,bytes.length));
+   const b64=btoa(Array.from(chunk,x=>String.fromCharCode(x)).join(''));
+   const resp=await fetch('/audio',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({data:b64})});
+   if(!resp.ok)throw Error('ESP32 audio transfer failed');
+  }
+  await fetch('/face?state=idle');
+ }catch(e){$('out').textContent+='\\nVoice error: '+e.message}
 }
 
-// --- HTTP Handlers ---
-esp_err_t index_handler(httpd_req_t *req) {
-    httpd_resp_set_type(req, "text/html");
-    return httpd_resp_send(req, index_html, strlen(index_html));
+function listen(){
+ const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+ if(!SR){$('out').textContent='Speech recognition is unavailable in this browser. Type instead.';return}
+ const rec=new SR();rec.lang='en-IN';
+ rec.onresult=e=>{$('msg').value=e.results[0][0].transcript;sendMsg()};
+ rec.onerror=e=>$('out').textContent='Mic error: '+e.error;
+ rec.start();
+}
+</script>
+</body>
+</html>
+)HTML";
+
+void drawFace(String state) {
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+
+  if(state == "happy") {
+    display.fillCircle(38, 25, 9, SSD1306_WHITE);
+    display.fillCircle(90, 25, 9, SSD1306_WHITE);
+    display.fillRoundRect(42, 43, 44, 5, 2, SSD1306_WHITE);
+  } else if(state == "sad") {
+    display.drawLine(27, 18, 45, 25, SSD1306_WHITE);
+    display.drawLine(83, 25, 101, 18, SSD1306_WHITE);
+    display.drawLine(43, 48, 64, 40, SSD1306_WHITE);
+    display.drawLine(64, 40, 85, 48, SSD1306_WHITE);
+  } else if(state == "angry") {
+    display.fillCircle(38, 27, 7, SSD1306_WHITE);
+    display.fillCircle(90, 27, 7, SSD1306_WHITE);
+    display.drawLine(25, 13, 48, 20, SSD1306_WHITE);
+    display.drawLine(80, 20, 103, 13, SSD1306_WHITE);
+    display.drawLine(47, 49, 81, 49, SSD1306_WHITE);
+  } else if(state == "surprised") {
+    display.drawCircle(38, 24, 10, SSD1306_WHITE);
+    display.drawCircle(90, 24, 10, SSD1306_WHITE);
+    display.drawCircle(64, 46, 8, SSD1306_WHITE);
+  } else if(state == "talking") {
+    display.fillCircle(38, 24, 8, SSD1306_WHITE);
+    display.fillCircle(90, 24, 8, SSD1306_WHITE);
+    display.fillRoundRect(53, 40, 22, 15, 5, SSD1306_WHITE);
+  } else {
+    display.drawRoundRect(27, 17, 23, 15, 5, SSD1306_WHITE);
+    display.drawRoundRect(79, 17, 23, 15, 5, SSD1306_WHITE);
+    display.drawLine(48, 46, 80, 46, SSD1306_WHITE);
+  }
+
+  display.setTextSize(1);
+  display.setCursor(0, 56);
+  display.print(mood.substring(0, 18));
+  display.display();
 }
 
-esp_err_t action_handler(httpd_req_t *req) {
-    char buf[64];
-    if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
-        char valL[8], valR[8];
-        httpd_query_key_value(buf, "l", valL, sizeof(valL));
-        httpd_query_key_value(buf, "r", valR, sizeof(valR));
-        motorLeft = atoi(valL);
-        motorRight = atoi(valR);
-        lastCommandTime = millis();
-        if(motorLeft != 0 || motorRight != 0) currentState = DRIVING;
+void handleMood() {
+  if(server.hasArg("plain")) {
+    JsonDocument doc;
+    if(deserializeJson(doc, server.arg("plain")) == DeserializationError::Ok) {
+      expression = doc["emotion"] | "neutral";
+      mood = doc["mood"] | "calm";
+      intensity = doc["intensity"] | 50;
+      lastMessage = doc["reply"] | "";
+      if(expression != "happy" && expression != "sad" &&
+         expression != "angry" && expression != "surprised")
+        expression = "neutral";
+      drawFace(expression);
     }
-    httpd_resp_send(req, "OK", 2);
-    return ESP_OK;
+  }
+  server.send(200, "text/plain", "OK");
 }
 
-esp_err_t servo_handler(httpd_req_t *req) {
-    char buf[64], id[8], val[8];
-    if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
-        httpd_query_key_value(buf, "id", id, sizeof(id));
-        httpd_query_key_value(buf, "val", val, sizeof(val));
-        if (strcmp(id, "head") == 0) headAngle = atoi(val);
-        if (strcmp(id, "arm") == 0) armAngle = atoi(val);
-    }
-    httpd_resp_send(req, "OK", 2);
-    return ESP_OK;
+void handleAudio() {
+  if(!server.hasArg("plain")) {
+    server.send(400, "text/plain", "Missing audio");
+    return;
+  }
+
+  JsonDocument doc;
+  if(deserializeJson(doc, server.arg("plain"))) {
+    server.send(400, "text/plain", "Bad JSON");
+    return;
+  }
+
+  String b64 = doc["data"] | "";
+  size_t outLen = (b64.length() / 4) * 3;
+  if(b64.endsWith("==")) outLen -= 2;
+  else if(b64.endsWith("=")) outLen -= 1;
+
+  uint8_t *pcm = (uint8_t*)malloc(outLen);
+  if(!pcm) {
+    server.send(500, "text/plain", "Out of memory");
+    return;
+  }
+
+  size_t decoded = 0;
+  int ret = mbedtls_base64_decode(pcm, outLen, &decoded,
+    (const unsigned char*)b64.c_str(), b64.length());
+
+  if(ret == 0 && decoded > 0) {
+    size_t written = 0;
+    i2s_write(I2S_NUM_0, pcm, decoded, &written, portMAX_DELAY);
+  }
+
+  free(pcm);
+  drawFace("talking");
+  server.send(200, "text/plain", "OK");
 }
 
-esp_err_t ptt_handler(httpd_req_t *req) {
-    char buf[64], active[8];
-    if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
-        httpd_query_key_value(buf, "active", active, sizeof(active));
-        pttActive = (atoi(active) == 1);
-    }
-    httpd_resp_send(req, "OK", 2);
-    return ESP_OK;
-}
+void setupI2S() {
+  i2s_config_t config = {};
+  config.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX);
+  config.sample_rate = 24000;
+  config.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
+  config.channel_format = I2S_CHANNEL_FMT_ONLY_LEFT;
+  config.communication_format = I2S_COMM_FORMAT_STAND_I2S;
+  config.intr_alloc_flags = 0;
+  config.dma_buf_count = 8;
+  config.dma_buf_len = 512;
+  config.use_apll = false;
+  config.tx_desc_auto_clear = true;
+  config.fixed_mclk = 0;
 
-void startCameraServer() {
-    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.server_port = 80;
+  i2s_pin_config_t pins = {};
+  pins.bck_io_num = I2S_BCLK;
+  pins.ws_io_num = I2S_LRC;
+  pins.data_out_num = I2S_DOUT;
+  pins.data_in_num = I2S_PIN_NO_CHANGE;
 
-    httpd_uri_t index_uri = { .uri = "/", .method = HTTP_GET, .handler = index_handler, .user_ctx = NULL };
-    httpd_uri_t action_uri = { .uri = "/action", .method = HTTP_GET, .handler = action_handler, .user_ctx = NULL };
-    httpd_uri_t servo_uri = { .uri = "/servo", .method = HTTP_GET, .handler = servo_handler, .user_ctx = NULL };
-    httpd_uri_t ptt_uri = { .uri = "/ptt", .method = HTTP_GET, .handler = ptt_handler, .user_ctx = NULL };
-    
-    // Note: MJPEG /stream handler requires multipart framing. 
-    // Omitted here for brevity, standard ESP32 Camera WebServer stream_handler drops in here.
-
-    if (httpd_start(&stream_httpd, &config) == ESP_OK) {
-        httpd_register_uri_handler(stream_httpd, &index_uri);
-        httpd_register_uri_handler(stream_httpd, &action_uri);
-        httpd_register_uri_handler(stream_httpd, &servo_uri);
-        httpd_register_uri_handler(stream_httpd, &ptt_uri);
-    }
-}
-
-// --- OLED UI Function ---
-void updateOLED(RobotState state) {
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-    
-    // Network Info
-    display.setCursor(0, 0);
-    display.print(WiFi.getMode() == WIFI_AP ? "AP: RoboExhibition" : WiFi.localIP().toString());
-    
-    // Status Bar & Expressions
-    display.setCursor(0, 16);
-    switch(state) {
-        case IDLE:
-            display.print("State: IDLE (-_-)"); break;
-        case DRIVING:
-            display.print("State: DRIVING (o_o)"); break;
-        case LISTENING:
-            display.print("State: LISTENING (?)"); break;
-        case AI_SPEAKING:
-            display.print("State: SPEAKING (^o^)"); break;
-    }
-    display.display();
+  i2s_driver_install(I2S_NUM_0, &config, 0, NULL);
+  i2s_set_pin(I2S_NUM_0, &pins);
+  i2s_zero_dma_buffer(I2S_NUM_0);
 }
 
 void setup() {
-    // Disable core watchdog during setup to allow FreeRTOS config
-    disableCore0WDT();
-    
-    xTaskCreatePinnedToCore(TaskCore0, "Core0_NetCamAudio", 10000, NULL, 1, &Core0Task, 0);
-    xTaskCreatePinnedToCore(TaskCore1, "Core1_Hardware", 10000, NULL, 1, &Core1Task, 1);
+  Serial.begin(115200);
+  Wire.begin(OLED_SDA, OLED_SCL);
+
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("OLED not found. Check address/wiring.");
+  } else {
+    drawFace("neutral");
+  }
+
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  pinMode(SERVO1_PIN, OUTPUT);
+  pinMode(SERVO2_PIN, OUTPUT);
+
+  setupI2S();
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  Serial.print("Connecting to hotspot");
+  while(WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println();
+  Serial.print("Open on your phone: http://");
+  Serial.println(WiFi.localIP());
+
+  server.on("/", HTTP_GET, []() {
+    server.send_P(200, "text/html", PAGE);
+  });
+
+  server.on("/mood", HTTP_POST, handleMood);
+  server.on("/audio", HTTP_POST, handleAudio);
+  server.on("/face", HTTP_GET, []() {
+    expression = server.arg("state");
+    drawFace(expression);
+    server.send(200, "text/plain", "OK");
+  });
+
+  server.begin();
 }
 
 void loop() {
-    // Empty - Code executes in FreeRTOS tasks
-    vTaskDelete(NULL);
+  server.handleClient();
 }
