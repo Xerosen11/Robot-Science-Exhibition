@@ -1,320 +1,283 @@
-
 #include <WiFi.h>
 #include <WebServer.h>
+#include <WebSocketsServer.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-#include <ArduinoJson.h>
-#include "driver/i2s.h"
+#include <driver/i2s.h>
+#include <ESP32Servo.h>
 
-// ===== YOUR HOTSPOT =====
-const char* WIFI_SSID = "YOUR_PHONE_HOTSPOT";
-const char* WIFI_PASS = "YOUR_HOTSPOT_PASSWORD";
+// --- Wi-Fi Configuration ---
+const char* ssid = "YOUR_HOTSPOT_NAME"; 
+const char* password = "YOUR_HOTSPOT_PASSWORD";       
 
-// ===== YOUR EXACT PINOUT =====
-#define OLED_SDA 21
-#define OLED_SCL 22
+WebServer server(80);
+WebSocketsServer webSocket(81);
 
-#define I2S_BCLK 26
-#define I2S_LRC  25
-#define I2S_DOUT 33
-
-#define TRIG_PIN 5
-#define ECHO_PIN 18
-
-#define SERVO1_PIN 13
-#define SERVO2_PIN 14
-
+// --- Pin Definitions ---
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
-Adafruit_SSD1306 display(
-  SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1
-);
-WebServer server(80);
+#define I2S_BCLK 14
+#define I2S_LRC 26
+#define I2S_DOUT 27
 
-String mood = "neutral";
-String expression = "idle";
-String lastMessage = "Hello! I am ready.";
-int intensity = 50;
+const int TRIG_PIN = 32;
+const int ECHO_PIN = 33;
 
-const char PAGE[] PROGMEM = R"HTML(
-<!doctype html>
-<html>
+Servo leftArm;
+Servo rightArm;
+const int LEFT_SERVO_PIN = 18;
+const int RIGHT_SERVO_PIN = 19;
+
+unsigned long lastSensorCheck = 0;
+
+// --- State Machine Variables (BUG FIX) ---
+String pendingEmotion = "";
+String pendingText = "";
+bool isActing = false;
+
+// --- Web UI HTML ---
+const char index_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE HTML><html>
 <head>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Robot AI</title>
-<style>
-body{font-family:Arial;background:#101827;color:white;
-padding:18px;max-width:600px;margin:auto}
-textarea,input,button{box-sizing:border-box;width:100%;
-padding:13px;margin:7px 0;border-radius:10px;border:0}
-button{background:#40c4ff;font-weight:bold}
-pre{white-space:pre-wrap;background:#202d40;padding:12px;
-border-radius:10px}
-</style>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scrappy Control</title>
+  <style>
+    body { font-family: Arial; text-align: center; margin-top: 20px; background-color: #222; color: #fff; }
+    button, input { padding: 10px; font-size: 18px; margin: 5px; border-radius: 8px; border: none; }
+    input[type="text"] { width: 80%; max-width: 300px; margin-bottom: 20px; }
+  </style>
 </head>
 <body>
-<h2>🤖 Gemini Robot Control</h2>
-<p>Enter your Gemini API key. Keep this page on your trusted
-phone hotspot; don't share the key or expose the ESP32 server publicly.</p>
-<input id="key" type="password" placeholder="Gemini API key">
-<textarea id="msg" rows="3" placeholder="Talk to your robot..."></textarea>
-<button onclick="sendMsg()">Send to robot</button>
-<button onclick="listen()">🎙️ Speak (supported browsers)</button>
-<pre id="out">Robot ready.</pre>
-<script>
-const $=id=>document.getElementById(id);
-
-async function sendMsg(){
- const key=$('key').value.trim();
- const msg=$('msg').value.trim();
- if(!key||!msg){$('out').textContent='Enter an API key and message.';return;}
- $('out').textContent='Thinking...';
- try{
-  const r=await fetch(
-   'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
-   {method:'POST',
-    headers:{'Content-Type':'application/json','x-goog-api-key':key},
-    body:JSON.stringify({contents:[{parts:[{text:
-      'You are a friendly expressive robot. Reply concisely. '+
-      'Return ONLY JSON: {"reply":"spoken response","emotion":"happy|sad|angry|surprised|neutral","mood":"playful|calm|excited|curious","intensity":50}. User says: '+msg
-    }]}]})
-  );
-  const data=await r.json();
-  if(!r.ok)throw Error(data.error?.message||'Gemini request failed');
-  const raw=data.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join('')||'';
-  const clean=raw.replace(/```json|```/g,'').trim();
-  let obj;
-  try{obj=JSON.parse(clean)}catch{obj={reply:raw,emotion:'neutral',mood:'calm',intensity:50}}
-  $('out').textContent=obj.reply||raw;
-  await fetch('/mood',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({emotion:obj.emotion||'neutral',mood:obj.mood||'calm',
-   intensity:obj.intensity||50,reply:obj.reply||raw})});
-  await speak(key,obj.reply||raw);
- }catch(e){$('out').textContent='Error: '+e.message}
-}
-
-async function speak(key,text){
- $('out').textContent+='\\nGenerating voice...';
- try{
-  const r=await fetch(
-   'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent',
-   {method:'POST',
-    headers:{'Content-Type':'application/json','x-goog-api-key':key},
-    body:JSON.stringify({
-     contents:[{parts:[{text:'Say naturally and warmly: '+text}]}],
-     generationConfig:{
-      responseModalities:['AUDIO'],
-      speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName:'Kore'}}}
-     }
-    })
-   });
-  const data=await r.json();
-  if(!r.ok)throw Error(data.error?.message||'TTS request failed');
-  const part=data.candidates?.[0]?.content?.parts?.find(p=>p.inlineData?.data);
-  if(!part)throw Error('No audio returned. Check the TTS model and API access.');
-  let bytes=Uint8Array.from(atob(part.inlineData.data),c=>c.charCodeAt(0));
-  // Gemini TTS commonly returns raw 24 kHz, mono, signed 16-bit PCM.
-  // Strip a WAV header if the returned bytes contain one.
-  if(bytes.length>44&&String.fromCharCode(...bytes.slice(0,4))==='RIFF'){
-    let pos=12;
-    while(pos+8<=bytes.length){
-      const id=String.fromCharCode(...bytes.slice(pos,pos+4));
-      const size=bytes[pos+4]|(bytes[pos+5]<<8)|(bytes[pos+6]<<16)|(bytes[pos+7]<<24);
-      if(id==='data'){bytes=bytes.slice(pos+8,pos+8+size);break}
-      pos+=8+size;
+  <h1>Scrappy Companion</h1>
+  <input type="text" id="chatbox" placeholder="Type what Scrappy should say...">
+  <br>
+  <button onclick="sendMsg('HAPPY')">Say (Happy)</button>
+  <button onclick="sendMsg('ALERT')">Say (Alert)</button>
+  <button onclick="sendMsg('PANIC')">Say (Panic)</button>
+  <button onclick="sendMsg('REST')">Rest</button>
+  <script>
+    var connection = new WebSocket('ws://' + location.hostname + ':81/', ['arduino']);
+    function sendMsg(emotion) {
+      if(connection.readyState === WebSocket.OPEN){
+        var text = document.getElementById('chatbox').value;
+        if(text === "" && emotion !== "REST") text = "Hello!";
+        connection.send(emotion + "|" + text);
+      }
     }
-  }
-  // Send sequential chunks to ESP32. Basic prototype; gaps may occur.
-  const chunkSize=4096;
-  for(let i=0;i<bytes.length;i+=chunkSize){
-   const chunk=bytes.slice(i,Math.min(i+chunkSize,bytes.length));
-   const b64=btoa(Array.from(chunk,x=>String.fromCharCode(x)).join(''));
-   const resp=await fetch('/audio',{method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({data:b64})});
-   if(!resp.ok)throw Error('ESP32 audio transfer failed');
-  }
-  await fetch('/face?state=idle');
- }catch(e){$('out').textContent+='\\nVoice error: '+e.message}
-}
-
-function listen(){
- const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
- if(!SR){$('out').textContent='Speech recognition is unavailable in this browser. Type instead.';return}
- const rec=new SR();rec.lang='en-IN';
- rec.onresult=e=>{$('msg').value=e.results[0][0].transcript;sendMsg()};
- rec.onerror=e=>$('out').textContent='Mic error: '+e.error;
- rec.start();
-}
-</script>
+  </script>
 </body>
 </html>
-)HTML";
+)rawliteral";
 
-void drawFace(String state) {
-  display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
-
-  if(state == "happy") {
-    display.fillCircle(38, 25, 9, SSD1306_WHITE);
-    display.fillCircle(90, 25, 9, SSD1306_WHITE);
-    display.fillRoundRect(42, 43, 44, 5, 2, SSD1306_WHITE);
-  } else if(state == "sad") {
-    display.drawLine(27, 18, 45, 25, SSD1306_WHITE);
-    display.drawLine(83, 25, 101, 18, SSD1306_WHITE);
-    display.drawLine(43, 48, 64, 40, SSD1306_WHITE);
-    display.drawLine(64, 40, 85, 48, SSD1306_WHITE);
-  } else if(state == "angry") {
-    display.fillCircle(38, 27, 7, SSD1306_WHITE);
-    display.fillCircle(90, 27, 7, SSD1306_WHITE);
-    display.drawLine(25, 13, 48, 20, SSD1306_WHITE);
-    display.drawLine(80, 20, 103, 13, SSD1306_WHITE);
-    display.drawLine(47, 49, 81, 49, SSD1306_WHITE);
-  } else if(state == "surprised") {
-    display.drawCircle(38, 24, 10, SSD1306_WHITE);
-    display.drawCircle(90, 24, 10, SSD1306_WHITE);
-    display.drawCircle(64, 46, 8, SSD1306_WHITE);
-  } else if(state == "talking") {
-    display.fillCircle(38, 24, 8, SSD1306_WHITE);
-    display.fillCircle(90, 24, 8, SSD1306_WHITE);
-    display.fillRoundRect(53, 40, 22, 15, 5, SSD1306_WHITE);
-  } else {
-    display.drawRoundRect(27, 17, 23, 15, 5, SSD1306_WHITE);
-    display.drawRoundRect(79, 17, 23, 15, 5, SSD1306_WHITE);
-    display.drawLine(48, 46, 80, 46, SSD1306_WHITE);
-  }
-
-  display.setTextSize(1);
-  display.setCursor(0, 56);
-  display.print(mood.substring(0, 18));
-  display.display();
-}
-
-void handleMood() {
-  if(server.hasArg("plain")) {
-    JsonDocument doc;
-    if(deserializeJson(doc, server.arg("plain")) == DeserializationError::Ok) {
-      expression = doc["emotion"] | "neutral";
-      mood = doc["mood"] | "calm";
-      intensity = doc["intensity"] | 50;
-      lastMessage = doc["reply"] | "";
-      if(expression != "happy" && expression != "sad" &&
-         expression != "angry" && expression != "surprised")
-        expression = "neutral";
-      drawFace(expression);
+// --- WebSocket Event Handler (BUG FIX) ---
+// Now we only save the data here. We DO NOT use delay() or move servos here.
+void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
+  if(type == WStype_TEXT && !isActing) {
+    String data = (char*)payload;
+    int delimiter = data.indexOf('|');
+    if (delimiter > 0) {
+      pendingEmotion = data.substring(0, delimiter);
+      pendingText = data.substring(delimiter + 1);
+    } else {
+      pendingEmotion = data;
+      pendingText = "";
     }
   }
-  server.send(200, "text/plain", "OK");
-}
-
-void handleAudio() {
-  if(!server.hasArg("plain")) {
-    server.send(400, "text/plain", "Missing audio");
-    return;
-  }
-
-  JsonDocument doc;
-  if(deserializeJson(doc, server.arg("plain"))) {
-    server.send(400, "text/plain", "Bad JSON");
-    return;
-  }
-
-  String b64 = doc["data"] | "";
-  size_t outLen = (b64.length() / 4) * 3;
-  if(b64.endsWith("==")) outLen -= 2;
-  else if(b64.endsWith("=")) outLen -= 1;
-
-  uint8_t *pcm = (uint8_t*)malloc(outLen);
-  if(!pcm) {
-    server.send(500, "text/plain", "Out of memory");
-    return;
-  }
-
-  size_t decoded = 0;
-  int ret = mbedtls_base64_decode(pcm, outLen, &decoded,
-    (const unsigned char*)b64.c_str(), b64.length());
-
-  if(ret == 0 && decoded > 0) {
-    size_t written = 0;
-    i2s_write(I2S_NUM_0, pcm, decoded, &written, portMAX_DELAY);
-  }
-
-  free(pcm);
-  drawFace("talking");
-  server.send(200, "text/plain", "OK");
-}
-
-void setupI2S() {
-  i2s_config_t config = {};
-  config.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX);
-  config.sample_rate = 24000;
-  config.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
-  config.channel_format = I2S_CHANNEL_FMT_ONLY_LEFT;
-  config.communication_format = I2S_COMM_FORMAT_STAND_I2S;
-  config.intr_alloc_flags = 0;
-  config.dma_buf_count = 8;
-  config.dma_buf_len = 512;
-  config.use_apll = false;
-  config.tx_desc_auto_clear = true;
-  config.fixed_mclk = 0;
-
-  i2s_pin_config_t pins = {};
-  pins.bck_io_num = I2S_BCLK;
-  pins.ws_io_num = I2S_LRC;
-  pins.data_out_num = I2S_DOUT;
-  pins.data_in_num = I2S_PIN_NO_CHANGE;
-
-  i2s_driver_install(I2S_NUM_0, &config, 0, NULL);
-  i2s_set_pin(I2S_NUM_0, &pins);
-  i2s_zero_dma_buffer(I2S_NUM_0);
 }
 
 void setup() {
   Serial.begin(115200);
-  Wire.begin(OLED_SDA, OLED_SCL);
 
-  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println("OLED not found. Check address/wiring.");
-  } else {
-    drawFace("neutral");
-  }
+  // 1. Wi-Fi
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting");
+  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+  Serial.println("\nIP: " + WiFi.localIP().toString());
 
+  // 2. Web & WebSockets
+  server.on("/", []() { server.send(200, "text/html", index_html); });
+  server.begin();
+  webSocket.begin();
+  webSocket.onEvent(webSocketEvent);
+
+  // 3. OLED
+  Wire.begin(21, 22);
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  displayScreen("NEUTRAL", "Online.");
+  
+  // 4. I2S Audio (MAX98357A)
+  i2s_config_t i2s_config = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+    .sample_rate = 16000,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+    .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+    .dma_buf_count = 8,
+    .dma_buf_len = 64,
+    .use_apll = false
+  };
+  i2s_pin_config_t pin_config = {
+    .bck_io_num = I2S_BCLK,
+    .ws_io_num = I2S_LRC,
+    .data_out_num = I2S_DOUT,
+    .data_in_num = I2S_PIN_NO_CHANGE
+  };
+  i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL);
+  i2s_set_pin(I2S_NUM_0, &pin_config);
+  i2s_zero_dma_buffer(I2S_NUM_0); // Ensure silence on boot
+
+  // 5. Servos & Sensor
+  ESP32PWM::allocateTimer(0);
+  ESP32PWM::allocateTimer(1);
+  leftArm.setPeriodHertz(50);
+  rightArm.setPeriodHertz(50);
+  leftArm.attach(LEFT_SERVO_PIN, 500, 2400);
+  rightArm.attach(RIGHT_SERVO_PIN, 500, 2400);
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
-  pinMode(SERVO1_PIN, OUTPUT);
-  pinMode(SERVO2_PIN, OUTPUT);
-
-  setupI2S();
-
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  Serial.print("Connecting to hotspot");
-  while(WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-
-  Serial.println();
-  Serial.print("Open on your phone: http://");
-  Serial.println(WiFi.localIP());
-
-  server.on("/", HTTP_GET, []() {
-    server.send_P(200, "text/html", PAGE);
-  });
-
-  server.on("/mood", HTTP_POST, handleMood);
-  server.on("/audio", HTTP_POST, handleAudio);
-  server.on("/face", HTTP_GET, []() {
-    expression = server.arg("state");
-    drawFace(expression);
-    server.send(200, "text/plain", "OK");
-  });
-
-  server.begin();
+  
+  setArms(10, 170); // Idle
 }
 
 void loop() {
   server.handleClient();
+  webSocket.loop();
+
+  // Execute pending web commands safely in the main loop
+  if (pendingEmotion != "") {
+    isActing = true;
+    speakAndMove(pendingEmotion, pendingText);
+    pendingEmotion = "";
+    pendingText = "";
+    isActing = false;
+  }
+
+  // Sensor Logic (Paused while acting so it doesn't interrupt itself)
+  if (!isActing && (millis() - lastSensorCheck > 200)) {
+    long distance = getDistance();
+    if (distance > 0 && distance < 15) {
+      isActing = true;
+      speakAndMove("PANIC", "Whoa! Too close!"); 
+      isActing = false;
+    } else if (distance >= 30 && distance <= 70) {
+      isActing = true;
+      speakAndMove("HAPPY", "Oh, hi there!");
+      isActing = false;
+    }
+    lastSensorCheck = millis();
+  }
+}
+
+// --- Audio Beep Synthesizer (BUG FIX) ---
+void playBeep(int frequency, int duration_ms) {
+  int sample_rate = 16000;
+  int samples = (sample_rate * duration_ms) / 1000;
+  int half_period = sample_rate / frequency / 2;
+  int16_t sample_val = 3000; // Moderate volume
+  int16_t buffer[64];
+  size_t bytes_written;
+  
+  // Play tone
+  for(int i=0; i<samples; ) {
+    for(int j=0; j<64 && i<samples; j++, i++) {
+      buffer[j] = ((i / half_period) % 2 == 0) ? sample_val : -sample_val;
+    }
+    i2s_write(I2S_NUM_0, buffer, sizeof(buffer), &bytes_written, portMAX_DELAY);
+  }
+  
+  // Flush buffer with absolute silence
+  memset(buffer, 0, sizeof(buffer));
+  for(int k = 0; k < 8; k++) {
+    i2s_write(I2S_NUM_0, buffer, sizeof(buffer), &bytes_written, portMAX_DELAY);
+  }
+  
+  // Hardware-level DMA clear
+  i2s_zero_dma_buffer(I2S_NUM_0);
+}
+
+// --- Display, Voice & Movement ---
+void speakAndMove(String emotion, String text) {
+  displayScreen(emotion, text);
+  
+  if (emotion == "HAPPY") {
+    leftArm.write(150); 
+    playBeep(880, 100); delay(50); playBeep(1100, 150); 
+    rightArm.write(20); delay(200);
+    rightArm.write(60); delay(200);
+    rightArm.write(20); delay(200);
+    setArms(10, 170);
+  } 
+  else if (emotion == "ALERT") {
+    setArms(45, 170);
+    playBeep(600, 200);
+  } 
+  else if (emotion == "PANIC") {
+    for(int i=0; i<2; i++) {
+      setArms(150, 30);
+      playBeep(1200, 100);
+      setArms(10, 170);
+      playBeep(400, 100);
+    }
+  } 
+  else if (emotion == "REST") {
+    setArms(10, 170);
+  }
+  
+  delay(1500); // Hold the text on screen briefly
+  displayScreen("NEUTRAL", "");
+}
+
+void displayScreen(String emotion, String text) {
+  display.clearDisplay();
+  
+  int yOffset = -5; 
+  if (emotion == "NEUTRAL") {
+    display.fillRoundRect(20, 20+yOffset, 30, 24, 5, SSD1306_WHITE);
+    display.fillRoundRect(78, 20+yOffset, 30, 24, 5, SSD1306_WHITE);
+  } else if (emotion == "HAPPY") {
+    display.drawCircle(35, 30+yOffset, 15, SSD1306_WHITE);
+    display.fillRect(20, 30+yOffset, 30, 20, SSD1306_BLACK); 
+    display.drawCircle(93, 30+yOffset, 15, SSD1306_WHITE);
+    display.fillRect(78, 30+yOffset, 30, 20, SSD1306_BLACK); 
+  } else if (emotion == "PANIC") {
+    int jitterX = random(-2, 3); int jitterY = random(-2, 3);
+    display.fillCircle(35 + jitterX, 32 + jitterY + yOffset, 12, SSD1306_WHITE);
+    display.fillCircle(93 + jitterX, 32 + jitterY + yOffset, 12, SSD1306_WHITE);
+  } else if (emotion == "ALERT") {
+    display.fillCircle(25, 30+yOffset, 15, SSD1306_WHITE);
+    display.fillCircle(83, 30+yOffset, 15, SSD1306_WHITE);
+    display.fillCircle(32, 30+yOffset, 5, SSD1306_BLACK); 
+    display.fillCircle(90, 30+yOffset, 5, SSD1306_BLACK);
+  } else if (emotion == "THINKING") {
+    display.fillRoundRect(20, 28+yOffset, 30, 8, 3, SSD1306_WHITE);
+    display.fillRoundRect(78, 28+yOffset, 30, 8, 3, SSD1306_WHITE);
+  }
+
+  // Draw Text at the bottom
+  if (text != "") {
+    display.setCursor(0, 48);
+    display.print(text);
+  }
+  display.display();
+}
+
+void setArms(int leftAngle, int rightAngle) {
+  leftArm.write(leftAngle);
+  rightArm.write(rightAngle);
+}
+
+long getDistance() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  return (pulseIn(ECHO_PIN, HIGH, 30000) * 0.034 / 2);
 }
