@@ -32,17 +32,17 @@
 * Shraddha Shrama
 
 ## 2. Circuit and Circuit Diagram
-*Currently on work.*
- 
-|Component|Pin / Signal|ESP32 DevKit V1 Pin|Notes|
-|---|---|---|---|
-|I2C OLED (0.96" / 0.98")|VCC|3V3|Logic & core display power|
-|\(|GND|GND|Common ground||\)|SCL|GPIO 22|Hardware default I2C clock|
-|\(|SDA|GPIO 21|Hardware default I2C data||MAX98357A I2S Amp|VIN / VCC|VIN (5V)|Power from 5V/USB rail for full 3W output||\)|GND|GND|Common ground|
-|\(|BCLK (Bit Clock)|GPIO 26|Standard I2S serial clock||\)|LRC / LRCLK (Word Select)|GPIO 25|Standard I2S left/right frame clock|
-|\(|DIN (Data In)|GPIO 33|Audio data line||\)|GAIN|Leave Floating|Defaults to 9 dB gain (stable, minimal distortion)|
-|\(|SD|Leave Floating|Mixes L+R channels into mono automatically||3W Speaker|+ and -|SPK+ / SPK-|Connect only across the amp's bridge terminals (never ground!)||HC-SR04 (RCWL-9300D)|VCC|3V3|Run at 3.3V so Echo output stays 3.3V-safe||\)|GND|GND|Common ground|
-|\(|TRIG|GPIO 5|Trigger pulse output||\)|ECHO|GPIO 18|Echo return signal input|
-|Reserved: Servos (SG90)|Servo 1 PWM|GPIO 13|Safe output pin for LEDC / Servo sweep|
-||Servo 2 PWM|GPIO 14|Safe output pin for LEDC / Servo sweep|
+| Component | Pin / Wire | ESP32 Connection | Power Connection |
+| --- | --- | --- | --- |
+| **SSD1306 OLED** | SDA | GPIO 21 | 3.3V / GND |
+|  | SCL | GPIO 22 |  |
+| **MAX98357A Amp** | DIN | GPIO 27 | 5V / Common GND |
+|  | LRC | GPIO 26 |  |
+|  | BCLK | GPIO 14 |  |
+| **HC-SR04 Sensor** | TRIG | GPIO 32 | 3.3V / GND |
+|  | ECHO | GPIO 33 |  |
+| **Left SG90 Servo** | Signal (Orange/Yellow) | GPIO 18 | **External 5V** / Common GND |
+| **Right SG90 Servo** | Signal (Orange/Yellow) | GPIO 19 | **External 5V** / Common GND |
+
+Ensure the negative (GND) wire from your external 5V servo power supply is securely tied to a GND pin on the ESP32, or the GPIO 18 and 19 control signals will not register.
 ---
