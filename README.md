@@ -1,43 +1,35 @@
-Here is the complete, exact pinout table matching the latest code:
-| Component | Component Pin | ESP32 DevKit V1 Pin | Power / Voltage Note |
-|---|---|---|---|
-| I2C OLED (0.96") | VCC
-GND
-SCL
-SDA | 3V3 (or 5V/VIN)
-GND
-GPIO 22
-GPIO 21 | Standard hardware I2C bus |
-| HC-SR04 Ultrasonic | VCC
-GND
-Trig
-Echo | VIN / 5V
-GND
-GPIO 5
-GPIO 18 | Direct 3.3V–5V compatible |
-| Left Servo (SG90) | VCC (Red)
-GND (Brown/Black)
-Signal (Orange/Yellow) | 5V / External Rail
-GND
-GPIO 13 | Dedicated PWM timer |
-| Right Servo (SG90) | VCC (Red)
-GND (Brown/Black)
-Signal (Orange/Yellow) | 5V / External Rail
-GND
-GPIO 4 | Clean GPIO (no boot conflict) |
-| MAX98357A I2S Amp | VIN
-GND
-LRC (WS)
-BCLK
-DIN
-GAIN
-SD | VIN / 5V
-GND
-GPIO 25
-GPIO 26
-GPIO 19
-GND
-(Leave disconnected) | Gain to GND sets volume to +6dB (avoids clipping/distortion on 3W speaker) |
-Critical Power Rule
- * Common Ground: All GND pins (ESP32, Servos, MAX98357A, OLED, HC-SR04) must connect to the same common Ground rail.
- * Servo Power: Never run both servo VCC lines directly off the ESP32's tiny 3.3V pin—feed them directly from your 5V power supply rail (VIN / USB 5V).
+# ESP32 Science Exhibition Robot — Pinout Configuration
+
+### Quick Reference Pin Mapping
+
+| Component | Component Pin | ESP32 DevKit V1 Pin | Power / Voltage Rails |
+| :--- | :--- | :--- | :--- |
+| **0.96" I2C OLED** | VCC | **3V3** (or 5V) | Logic High 3.3V |
+| | GND | **GND** | Common Ground |
+| | SCL | **GPIO 22** | Hardware I2C Clock |
+| | SDA | **GPIO 21** | Hardware I2C Data |
+| **HC-SR04 Ultrasonic** | VCC | **VIN / 5V** | 3.3V–5V Rail |
+| | GND | **GND** | Common Ground |
+| | Trig | **GPIO 5** | Trigger Output |
+| | Echo | **GPIO 18** | Echo Input |
+| **Left Servo (SG90)** | VCC (Red) | **5V External Rail** | Shared 5V Rail (Do NOT power via 3V3) |
+| | GND (Brown/Black) | **GND** | Common Ground |
+| | PWM (Orange/Yellow)| **GPIO 13** | Hardware Timer 0 |
+| **Right Servo (SG90)**| VCC (Red) | **5V External Rail** | Shared 5V Rail (Do NOT power via 3V3) |
+| | GND (Brown/Black) | **GND** | Common Ground |
+| | PWM (Orange/Yellow)| **GPIO 4** | Hardware Timer 1 |
+| **MAX98357A I2S Amp** | VIN | **VIN / 5V** | Audio Power Rail |
+| | GND | **GND** | Common Ground |
+| | LRC (WS) | **GPIO 25** | Word Select / Left-Right Clock |
+| | BCLK | **GPIO 26** | Bit Clock |
+| | DIN | **GPIO 19** | Serial Data |
+| | GAIN | **GND** | Configured to +6 dB (cleanest audio output) |
+| | SD | *NC* | Not Connected (Shutdown pin left floating) |
+
+---
+
+### Power Architecture & Decoupling Notes
+
+* **Common Ground Rail:** Tie all grounds (`ESP32 GND`, `Servo GND`, `MAX98357A GND`, `OLED GND`, `HC-SR04 GND`) to the same negative rail.
+* **Servo Inrush Current:** Keep both servo `VCC` lines on your main 5V rail; do not route them through the ESP32's onboard 3.3V regulator to avoid brownout resets.
+* **Capacitors:** Place a **47µF to 100µF electrolytic capacitor** across the 5V and GND rail right next to the servo power leads to suppress voltage dips during rapid arm movement.
