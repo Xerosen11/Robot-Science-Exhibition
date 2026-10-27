@@ -1,48 +1,43 @@
-# Leo - Friendly Desktop Assistant
-*A simple desktop robot that can move around using its wheels and assist people acccoring to there need.*
-
->    # **Lead By:** Neha ma'am  
-
----
-
->Copyright (c) 2026 Harsh Tirkey
-## 1. Hardware & Bill of Materials 
-
-| Component | Specification / Model | Quantity | Price |
-| :--- | :--- | :--- | :--- |
-| **Microcontroller** | ESP32-S3 CAM DevKit (N16R8) | 1 | ₹900-₹1600 |
-| **Camera** | OV2640 (24-Pin) | 1 | ₹150 – ₹200 |
-| **Screen** | 0.96" I²C OLED (SSD1306) | 1 | ₹150 – ₹200 |
-| **Microphone** | inmp441 i2s | 1 | ₹150 – ₹180 |
-| **Amplifier** | MAX98357A | 1 | ₹120 – ₹160 |
-| **Speaker** | 3W / 4Ω or 8Ω Mini Speaker | 1 | ₹40 – ₹60 |
-| **Actuators** | SG90 Servos | 2 | ₹180–₹240 |
-| **Motor Driver** | L298N / L293D Shield | 1 | 100–₹150 |
-| **Power Supply** | Powerbank | 1 | NULL |
-| **Chassis** | Wheeled chassis, two DC motors and wheels | 1 | ₹250–₹350 |
-
----
-
-## 2. Students working on this project.
-* Harsh Tirkey
-* Nikhil Bhengra
-* Nayan Nayak
-* Rimil Kerketta
-* Priyanshu Bhagat
-* Shraddha Shrama
-
-## 2. Circuit and Circuit Diagram
-| Component | Pin / Wire | ESP32 Connection | Power Connection |
-| --- | --- | --- | --- |
-| **SSD1306 OLED** | SDA | GPIO 21 | 3.3V / GND |
-|  | SCL | GPIO 22 |  |
-| **MAX98357A Amp** | DIN | GPIO 27 | 5V / Common GND |
-|  | LRC | GPIO 26 |  |
-|  | BCLK | GPIO 14 |  |
-| **HC-SR04 Sensor** | TRIG | GPIO 32 | 3.3V / GND |
-|  | ECHO | GPIO 33 |  |
-| **Left SG90 Servo** | Signal (Orange/Yellow) | GPIO 18 | **External 5V** / Common GND |
-| **Right SG90 Servo** | Signal (Orange/Yellow) | GPIO 19 | **External 5V** / Common GND |
-
-Ensure the negative (GND) wire from your external 5V servo power supply is securely tied to a GND pin on the ESP32, or the GPIO 18 and 19 control signals will not register.
----
+Here is the complete, exact pinout table matching the latest code:
+| Component | Component Pin | ESP32 DevKit V1 Pin | Power / Voltage Note |
+|---|---|---|---|
+| I2C OLED (0.96") | VCC
+GND
+SCL
+SDA | 3V3 (or 5V/VIN)
+GND
+GPIO 22
+GPIO 21 | Standard hardware I2C bus |
+| HC-SR04 Ultrasonic | VCC
+GND
+Trig
+Echo | VIN / 5V
+GND
+GPIO 5
+GPIO 18 | Direct 3.3V–5V compatible |
+| Left Servo (SG90) | VCC (Red)
+GND (Brown/Black)
+Signal (Orange/Yellow) | 5V / External Rail
+GND
+GPIO 13 | Dedicated PWM timer |
+| Right Servo (SG90) | VCC (Red)
+GND (Brown/Black)
+Signal (Orange/Yellow) | 5V / External Rail
+GND
+GPIO 4 | Clean GPIO (no boot conflict) |
+| MAX98357A I2S Amp | VIN
+GND
+LRC (WS)
+BCLK
+DIN
+GAIN
+SD | VIN / 5V
+GND
+GPIO 25
+GPIO 26
+GPIO 19
+GND
+(Leave disconnected) | Gain to GND sets volume to +6dB (avoids clipping/distortion on 3W speaker) |
+Critical Power Rule
+ * Common Ground: All GND pins (ESP32, Servos, MAX98357A, OLED, HC-SR04) must connect to the same common Ground rail.
+ * Servo Power: Never run both servo VCC lines directly off the ESP32's tiny 3.3V pin—feed them directly from your 5V power supply rail (VIN / USB 5V).
