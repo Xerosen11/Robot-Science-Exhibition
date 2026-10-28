@@ -209,7 +209,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
 }
 
 // ==========================================
-// 7. WEBPAGE & DYNAMIC GROQ ENGINE
+// 7. WEBPAGE & BULLETPROOF GROQ PARSER
 // ==========================================
 void handleRoot() {
     String html = R"rawliteral(
@@ -307,7 +307,6 @@ void handleRoot() {
         throw new Error(data.error ? data.error.message : 'Invalid model list format');
       }
     } catch(e) {
-      sel.innerHTML = '<option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile</option>';
       log('Model query notice: ' + e.message);
     }
   }
@@ -363,15 +362,16 @@ void handleRoot() {
       ws.send(JSON.stringify({ action: "NONE", expression: "LISTEN" }));
     }
 
-    const systemPrompt = `You are a lively robot companion. You must respond strictly with a valid json object matching this exact format:
+    const systemPrompt = `You are a real-world exhibition robot.
+CRITICAL INSTRUCTION: You must reply ONLY with a raw JSON object. Do not include markdown codeblocks (no \`\`\`json). Do not write ANY explanatory words before or after.
+Format:
 {
-  "action": "FORWARD",
+  "action": "NONE",
   "expression": "HAPPY",
-  "speech": "Hello there! Glad to meet you."
+  "speech": "Your short reply here."
 }
-Allowed actions: FORWARD, BACKWARD, LEFT, RIGHT, WAVE, STOP, AUTO, NONE.
-Allowed expressions: HAPPY, SCARED, SURPRISED, TALK, NORMAL.
-Keep speech under 2 sentences.`;
+Action options: FORWARD, BACKWARD, LEFT, RIGHT, WAVE, STOP, AUTO, NONE.
+Expression options: HAPPY, SCARED, SURPRISED, TALK, NORMAL.`;
 
     try {
       const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -382,12 +382,11 @@ Keep speech under 2 sentences.`;
         },
         body: JSON.stringify({
           model: selectedModel,
-          response_format: { type: "json_object" },
           messages: [
             { role: "system", content: systemPrompt },
             { role: "user", content: userText }
           ],
-          temperature: 0.6,
+          temperature: 0.5,
           max_tokens: 150
         })
       });
@@ -402,8 +401,15 @@ Keep speech under 2 sentences.`;
         throw new Error("Invalid response format received from Groq");
       }
 
-      const rawText = data.choices[0].message.content;
-      const parsed = JSON.parse(rawText);
+      let content = data.choices[0].message.content.trim();
+      
+      // Extract pure JSON object even if the model wraps it with markdown fences or text
+      const match = content.match(/\{[\s\S]*\}/);
+      if (!match) {
+        throw new Error("Model failed to output a JSON structure: " + content);
+      }
+      
+      const parsed = JSON.parse(match[0]);
 
       log('Robot: ' + parsed.speech);
       document.getElementById('speech-status').innerText = 'Ready';
