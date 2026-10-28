@@ -28,22 +28,22 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 #define TRIG_PIN 5
 #define ECHO_PIN 18
 
-// 4-Motor Driver Inputs
-#define MOTOR_L_F 12  
-#define MOTOR_L_B 14  
-#define MOTOR_R_F 27  
-#define MOTOR_R_B 26  
+// L298N Motor Driver Pins
+#define MOTOR_L_F 12  // IN1
+#define MOTOR_L_B 14  // IN2
+#define MOTOR_R_F 27  // IN3
+#define MOTOR_R_B 26  // IN4
 
-// Servo Arms
+// SG90 Servo Arms
 #define SERVO_LEFT_PIN  32
 #define SERVO_RIGHT_PIN 33
 Servo leftArm;
 Servo rightArm;
 
-// MAX98357A I2S Audio
+// MAX98357A I2S Audio Pins (GPIO 19 for DOUT protects GPIO 22 I2C SCL)
 #define I2S_BCLK 25
 #define I2S_LRC  23
-#define I2S_DOUT 19  // Avoids conflict with GPIO 22 (I2C SCL)
+#define I2S_DOUT 19
 #define I2S_NUM  I2S_NUM_0
 
 // Global Control Flags
@@ -165,7 +165,7 @@ void executeCommand(String action, String expression) {
     playChirp(true);
     
     actionStartTime = millis();
-    actionDuration = 1200; // Pulse move for 1.2s
+    actionDuration = 1200; // Drive duration for pulse movements (ms)
 
     if (action == "FORWARD") {
         moveForward();
@@ -209,7 +209,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
 }
 
 // ==========================================
-// 7. WEBPAGE & MOBILE AI BRAIN
+// 7. WEBPAGE & GROQ AI ENGINE
 // ==========================================
 void handleRoot() {
     String html = R"rawliteral(
@@ -220,21 +220,21 @@ void handleRoot() {
   <title>ESP32 AI Companion</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #121212; color: #fff; text-align: center; margin: 0; padding: 20px; }
-    h2 { margin-bottom: 4px; color: #00ADB5; }
+    h2 { margin-bottom: 4px; color: #f55036; }
     .card { background: #1E1E1E; border-radius: 12px; padding: 16px; margin: 14px auto; max-width: 440px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
     input[type=password], input[type=text] { width: calc(100% - 24px); padding: 12px; margin: 8px 0; border: 1px solid #333; border-radius: 8px; background: #2A2A2A; color: #fff; font-size: 15px; }
-    button { background: #00ADB5; border: none; color: #fff; padding: 12px 18px; font-size: 16px; border-radius: 8px; cursor: pointer; font-weight: bold; }
+    button { background: #f55036; border: none; color: #fff; padding: 12px 18px; font-size: 16px; border-radius: 8px; cursor: pointer; font-weight: bold; }
     button.mic-btn { background: #E94560; font-size: 18px; padding: 18px; border-radius: 50px; width: 85%; margin: 15px auto; display: block; }
     .status { color: #888; font-size: 13px; margin-top: 6px; }
     .log-box { text-align: left; background: #000; padding: 12px; border-radius: 8px; height: 120px; overflow-y: auto; font-family: monospace; font-size: 13px; color: #00ff88; margin-top: 10px; }
   </style>
 </head>
 <body>
-  <h2>🤖 ESP32 AI Companion</h2>
+  <h2>⚡ Robot AI Brain (Groq LPU)</h2>
   <div class="status" id="ws-status">Connecting to Robot...</div>
 
   <div class="card">
-    <input type="password" id="geminiKey" placeholder="Paste Gemini API Key here">
+    <input type="password" id="groqKey" placeholder="Paste Groq API Key (gsk_...)">
     <button style="width: 100%;" onclick="saveKey()">Save Key Locally</button>
   </div>
 
@@ -242,15 +242,15 @@ void handleRoot() {
     <button class="mic-btn" id="micBtn" onclick="toggleListening()">🎙️ TAP TO TALK</button>
     <div style="margin: 10px 0; color: #888;">— OR TYPE —</div>
     <div style="display: flex; gap: 8px;">
-      <input type="text" id="textPrompt" placeholder="Ask a question or issue a command..." onkeydown="if(event.key==='Enter') sendTextPrompt()">
+      <input type="text" id="textPrompt" placeholder="Ask anything or command robot..." onkeydown="if(event.key==='Enter') sendTextPrompt()">
       <button onclick="sendTextPrompt()">Send</button>
     </div>
     <div class="status" id="speech-status">Ready</div>
   </div>
 
   <div class="card">
-    <div style="font-weight: bold; margin-bottom: 6px;">Dialogue & Action Log</div>
-    <div class="log-box" id="logBox">Awaiting input...</div>
+    <div style="font-weight: bold; margin-bottom: 6px;">Live Interaction Feed</div>
+    <div class="log-box" id="logBox">System initialized...</div>
   </div>
 
 <script>
@@ -269,16 +269,16 @@ void handleRoot() {
   initWebSocket();
 
   function saveKey() {
-    const k = document.getElementById('geminiKey').value.trim();
+    const k = document.getElementById('groqKey').value.trim();
     if (k) {
-      localStorage.setItem('GEMINI_API_KEY', k);
-      alert('API Key Saved to Phone!');
+      localStorage.setItem('GROQ_API_KEY', k);
+      alert('Groq API Key Saved!');
     }
   }
 
   window.onload = () => {
-    const saved = localStorage.getItem('GEMINI_API_KEY');
-    if (saved) document.getElementById('geminiKey').value = saved;
+    const saved = localStorage.getItem('GROQ_API_KEY');
+    if (saved) document.getElementById('groqKey').value = saved;
   };
 
   function log(msg) {
@@ -292,55 +292,64 @@ void handleRoot() {
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.pitch = 1.05;
-      utterance.rate = 1.0;
+      utterance.rate = 1.05;
       window.speechSynthesis.speak(utterance);
     }
   }
 
   async function queryAI(userText) {
-    const apiKey = localStorage.getItem('GEMINI_API_KEY');
+    const apiKey = localStorage.getItem('GROQ_API_KEY');
     if (!apiKey) {
-      alert('Please enter and save your Gemini API key first!');
+      alert('Please enter and save your Groq API key first!');
       return;
     }
     
-    document.getElementById('speech-status').innerText = 'Thinking...';
+    document.getElementById('speech-status').innerText = 'Groq Thinking...';
     log('You: ' + userText);
 
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ action: "NONE", expression: "LISTEN" }));
     }
 
-    const systemPrompt = `You are a lively AI science exhibition robot. Analyze user statements and reply strictly in valid JSON without backticks, fences, or formatting:
+    const systemPrompt = `You are a lively science exhibition robot. You must respond strictly in JSON matching this schema:
 {
   "action": "FORWARD" | "BACKWARD" | "LEFT" | "RIGHT" | "WAVE" | "STOP" | "AUTO" | "NONE",
   "expression": "HAPPY" | "SCARED" | "SURPRISED" | "TALK" | "NORMAL",
-  "speech": "Concise spoken reply (1-2 sentences maximum)"
+  "speech": "Short spoken response (1-2 sentences maximum)"
 }`;
 
     try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + apiKey
+        },
         body: JSON.stringify({
-          contents: [
-            { role: "user", parts: [{ text: systemPrompt + "\nUser: " + userText }] }
-          ]
+          model: "llama-3.1-8b-instant",
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userText }
+          ],
+          temperature: 0.6,
+          max_tokens: 150
         })
       });
 
       const data = await response.json();
-      let rawText = data.candidates[0].content.parts[0].text;
-      rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-      
+      const rawText = data.choices[0].message.content;
       const parsed = JSON.parse(rawText);
+
       log('Robot: ' + parsed.speech);
       document.getElementById('speech-status').innerText = 'Ready';
 
+      // Send movement & expression commands to ESP32
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ action: parsed.action, expression: parsed.expression }));
       }
 
+      // Read answer aloud on phone
       speakText(parsed.speech);
 
     } catch (err) {
@@ -421,12 +430,12 @@ void handleRoot() {
 }
 
 // ==========================================
-// 8. SETUP & CONFIGURATION
+// 8. SETUP INITIALIZATION
 // ==========================================
 void setup() {
     Serial.begin(115200);
 
-    // Standard I2C: SDA on GPIO 21, SCL on GPIO 22
+    // Standard Hardware I2C (SDA = 21, SCL = 22)
     Wire.begin(21, 22);
     if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
         Serial.println("SSD1306 OLED init failed");
@@ -472,7 +481,7 @@ void setup() {
     i2s_driver_install(I2S_NUM, &i2s_config, 0, NULL);
     i2s_set_pin(I2S_NUM, &pin_config);
 
-    // Wi-Fi Connection
+    // Wi-Fi Hotspot Connection
     WiFi.begin(ssid, password);
     display.clearDisplay();
     display.setCursor(0, 10);
@@ -491,7 +500,7 @@ void setup() {
     display.println(WiFi.localIP().toString());
     display.display();
 
-    // Web & WebSocket Server Init
+    // Start Web & WebSocket Servers
     server.on("/", handleRoot);
     server.begin();
     webSocket.begin();
@@ -517,7 +526,7 @@ void loop() {
             drawFace("NORMAL");
         }
     } else {
-        // Autonomous Obstacle Avoidance
+        // Obstacle avoidance in Autonomous mode
         static unsigned long lastCheck = 0;
         if (millis() - lastCheck > 120) {
             lastCheck = millis();
