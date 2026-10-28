@@ -165,7 +165,7 @@ void executeCommand(String action, String expression) {
     playChirp(true);
     
     actionStartTime = millis();
-    actionDuration = 1200; // Drive duration for pulse movements (ms)
+    actionDuration = 1200; // Pulse move for 1.2s
 
     if (action == "FORWARD") {
         moveForward();
@@ -226,7 +226,7 @@ void handleRoot() {
     button { background: #f55036; border: none; color: #fff; padding: 12px 18px; font-size: 16px; border-radius: 8px; cursor: pointer; font-weight: bold; }
     button.mic-btn { background: #E94560; font-size: 18px; padding: 18px; border-radius: 50px; width: 85%; margin: 15px auto; display: block; }
     .status { color: #888; font-size: 13px; margin-top: 6px; }
-    .log-box { text-align: left; background: #000; padding: 12px; border-radius: 8px; height: 120px; overflow-y: auto; font-family: monospace; font-size: 13px; color: #00ff88; margin-top: 10px; }
+    .log-box { text-align: left; background: #000; padding: 12px; border-radius: 8px; height: 130px; overflow-y: auto; font-family: monospace; font-size: 13px; color: #00ff88; margin-top: 10px; }
   </style>
 </head>
 <body>
@@ -234,7 +234,7 @@ void handleRoot() {
   <div class="status" id="ws-status">Connecting to Robot...</div>
 
   <div class="card">
-    <input type="password" id="groqKey" placeholder="Paste Groq API Key (gsk_...)">
+    <input type="password" id="groqKey" placeholder="Paste Groq Key (gsk_...)">
     <button style="width: 100%;" onclick="saveKey()">Save Key Locally</button>
   </div>
 
@@ -311,12 +311,15 @@ void handleRoot() {
       ws.send(JSON.stringify({ action: "NONE", expression: "LISTEN" }));
     }
 
-    const systemPrompt = `You are a lively science exhibition robot. You must respond strictly in JSON matching this schema:
+    const systemPrompt = `You are a lively robot companion. You must respond strictly with a valid json object matching this exact format:
 {
-  "action": "FORWARD" | "BACKWARD" | "LEFT" | "RIGHT" | "WAVE" | "STOP" | "AUTO" | "NONE",
-  "expression": "HAPPY" | "SCARED" | "SURPRISED" | "TALK" | "NORMAL",
-  "speech": "Short spoken response (1-2 sentences maximum)"
-}`;
+  "action": "FORWARD",
+  "expression": "HAPPY",
+  "speech": "Hello there! Glad to meet you."
+}
+Allowed actions: FORWARD, BACKWARD, LEFT, RIGHT, WAVE, STOP, AUTO, NONE.
+Allowed expressions: HAPPY, SCARED, SURPRISED, TALK, NORMAL.
+Keep speech under 2 sentences.`;
 
     try {
       const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -338,23 +341,30 @@ void handleRoot() {
       });
 
       const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error ? data.error.message : ("HTTP Error " + response.status));
+      }
+
+      if (!data.choices || !data.choices[0] || !data.choices[0].message) {
+        throw new Error("Invalid response format received from Groq");
+      }
+
       const rawText = data.choices[0].message.content;
       const parsed = JSON.parse(rawText);
 
       log('Robot: ' + parsed.speech);
       document.getElementById('speech-status').innerText = 'Ready';
 
-      // Send movement & expression commands to ESP32
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ action: parsed.action, expression: parsed.expression }));
       }
 
-      // Read answer aloud on phone
       speakText(parsed.speech);
 
     } catch (err) {
       log('Error: ' + err.message);
-      document.getElementById('speech-status').innerText = 'Request Failed';
+      document.getElementById('speech-status').innerText = 'Failed';
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ action: "NONE", expression: "NORMAL" }));
       }
