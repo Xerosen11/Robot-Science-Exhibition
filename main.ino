@@ -209,7 +209,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
 }
 
 // ==========================================
-// 7. WEBPAGE & GROQ AI ENGINE
+// 7. WEBPAGE & DYNAMIC GROQ ENGINE
 // ==========================================
 void handleRoot() {
     String html = R"rawliteral(
@@ -222,7 +222,7 @@ void handleRoot() {
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #121212; color: #fff; text-align: center; margin: 0; padding: 20px; }
     h2 { margin-bottom: 4px; color: #f55036; }
     .card { background: #1E1E1E; border-radius: 12px; padding: 16px; margin: 14px auto; max-width: 440px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
-    input[type=password], input[type=text] { width: calc(100% - 24px); padding: 12px; margin: 8px 0; border: 1px solid #333; border-radius: 8px; background: #2A2A2A; color: #fff; font-size: 15px; }
+    input[type=password], input[type=text], select { width: calc(100% - 24px); padding: 12px; margin: 8px 0; border: 1px solid #333; border-radius: 8px; background: #2A2A2A; color: #fff; font-size: 15px; }
     button { background: #f55036; border: none; color: #fff; padding: 12px 18px; font-size: 16px; border-radius: 8px; cursor: pointer; font-weight: bold; }
     button.mic-btn { background: #E94560; font-size: 18px; padding: 18px; border-radius: 50px; width: 85%; margin: 15px auto; display: block; }
     .status { color: #888; font-size: 13px; margin-top: 6px; }
@@ -235,7 +235,10 @@ void handleRoot() {
 
   <div class="card">
     <input type="password" id="groqKey" placeholder="Paste Groq Key (gsk_...)">
-    <button style="width: 100%;" onclick="saveKey()">Save Key Locally</button>
+    <select id="modelSelect">
+      <option value="">Paste key and click below to load models</option>
+    </select>
+    <button style="width: 100%;" onclick="saveKeyAndFetchModels()">Save Key & Load Models</button>
   </div>
 
   <div class="card">
@@ -268,24 +271,67 @@ void handleRoot() {
   }
   initWebSocket();
 
-  function saveKey() {
-    const k = document.getElementById('groqKey').value.trim();
-    if (k) {
-      localStorage.setItem('GROQ_API_KEY', k);
-      alert('Groq API Key Saved!');
-    }
-  }
-
-  window.onload = () => {
-    const saved = localStorage.getItem('GROQ_API_KEY');
-    if (saved) document.getElementById('groqKey').value = saved;
-  };
-
   function log(msg) {
     const b = document.getElementById('logBox');
     b.innerHTML += '<br>> ' + msg;
     b.scrollTop = b.scrollHeight;
   }
+
+  async function fetchModels(apiKey) {
+    const sel = document.getElementById('modelSelect');
+    sel.innerHTML = '<option value="">Querying Groq models...</option>';
+    try {
+      const res = await fetch("https://api.groq.com/openai/v1/models", {
+        headers: { "Authorization": "Bearer " + apiKey }
+      });
+      const data = await res.json();
+      if (data.data && Array.isArray(data.data)) {
+        sel.innerHTML = '';
+        const models = data.data
+          .map(m => m.id)
+          .filter(id => !id.includes('whisper') && !id.includes('guard') && !id.includes('tts'));
+        
+        models.forEach(id => {
+          const opt = document.createElement('option');
+          opt.value = id;
+          opt.innerText = id;
+          sel.appendChild(opt);
+        });
+
+        const savedModel = localStorage.getItem('GROQ_SELECTED_MODEL');
+        if (savedModel && models.includes(savedModel)) {
+          sel.value = savedModel;
+        }
+        log('Loaded ' + models.length + ' available Groq models.');
+      } else {
+        throw new Error(data.error ? data.error.message : 'Invalid model list format');
+      }
+    } catch(e) {
+      sel.innerHTML = '<option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile</option>';
+      log('Model query notice: ' + e.message);
+    }
+  }
+
+  function saveKeyAndFetchModels() {
+    const k = document.getElementById('groqKey').value.trim();
+    if (k) {
+      localStorage.setItem('GROQ_API_KEY', k);
+      alert('Key Saved! Querying active models...');
+      fetchModels(k);
+    }
+  }
+
+  document.getElementById('modelSelect').addEventListener('change', (e) => {
+    localStorage.setItem('GROQ_SELECTED_MODEL', e.target.value);
+  });
+
+  window.onload = () => {
+    const savedKey = localStorage.getItem('GROQ_API_KEY');
+    if (savedKey) {
+      document.getElementById('groqKey').value = savedKey;
+      fetchModels(savedKey);
+    }
+  };
 
   function speakText(text) {
     if ('speechSynthesis' in window) {
@@ -299,12 +345,18 @@ void handleRoot() {
 
   async function queryAI(userText) {
     const apiKey = localStorage.getItem('GROQ_API_KEY');
+    const selectedModel = document.getElementById('modelSelect').value;
+
     if (!apiKey) {
-      alert('Please enter and save your Groq API key first!');
+      alert('Please paste and save your Groq API key first!');
+      return;
+    }
+    if (!selectedModel) {
+      alert('Please click "Save Key & Load Models" to select a model.');
       return;
     }
     
-    document.getElementById('speech-status').innerText = 'Groq Thinking...';
+    document.getElementById('speech-status').innerText = 'Thinking (' + selectedModel + ')...';
     log('You: ' + userText);
 
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -329,7 +381,7 @@ Keep speech under 2 sentences.`;
           "Authorization": "Bearer " + apiKey
         },
         body: JSON.stringify({
-          model: "llama-3.1-8b-instant",
+          model: selectedModel,
           response_format: { type: "json_object" },
           messages: [
             { role: "system", content: systemPrompt },
