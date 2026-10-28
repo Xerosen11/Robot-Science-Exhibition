@@ -1,24 +1,11 @@
-#include <WiFi.h>
-#include <WebServer.h>
-#include <WebSocketsServer.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <ESP32Servo.h>
-#include <ArduinoJson.h>
 #include "driver/i2s.h"
 
 // ==========================================
-// 1. WI-FI HOTSPOT CREDENTIALS
-// ==========================================
-const char* ssid     = "Realme 8 5G"; 
-const char* password = "12345678";   
-
-WebServer server(80);
-WebSocketsServer webSocket = WebSocketsServer(81);
-
-// ==========================================
-// 2. PIN DEFINITIONS
+// 1. PIN DEFINITIONS
 // ==========================================
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -52,53 +39,7 @@ unsigned long actionStartTime = 0;
 unsigned long actionDuration = 0;
 
 // ==========================================
-// 3. SOUND SYNTHESIS (MAX98357A SPEAKER)
-// ==========================================
-void playTone(uint32_t frequency, uint32_t duration_ms) {
-    size_t bytes_written;
-    uint32_t sample_rate = 16000;
-    uint32_t half_period = sample_rate / (2 * frequency);
-    
-    int16_t* sample_buffer = (int16_t*)malloc(half_period * 2 * sizeof(int16_t));
-    if (!sample_buffer) return;
-
-    for (uint32_t i = 0; i < half_period * 2; i++) {
-        sample_buffer[i] = (i < half_period) ? 6000 : -6000;
-    }
-
-    unsigned long start_time = millis();
-    while (millis() - start_time < duration_ms) {
-        i2s_write(I2S_NUM, sample_buffer, half_period * 2 * sizeof(int16_t), &bytes_written, portMAX_DELAY);
-    }
-    
-    int16_t silence = 0;
-    i2s_write(I2S_NUM, &silence, sizeof(silence), &bytes_written, portMAX_DELAY);
-    free(sample_buffer);
-}
-
-void playChirp(bool positive) {
-    if (positive) {
-        playTone(600, 80);
-        playTone(900, 100);
-        playTone(1200, 120);
-    } else {
-        playTone(400, 100);
-        playTone(250, 150);
-    }
-}
-
-// Robot Robotic Voice Simulation (R2-D2 style chirps when talking)
-void playSpeakingEffect(int syllables) {
-    for (int i = 0; i < syllables; i++) {
-        uint32_t freq = random(400, 1400);
-        uint32_t dur = random(60, 130);
-        playTone(freq, dur);
-        delay(20);
-    }
-}
-
-// ==========================================
-// 4. OLED EMOTION RENDERER
+// 2. OLED EMOTION RENDERER
 // ==========================================
 void drawFace(String expression) {
     display.clearDisplay();
@@ -125,7 +66,7 @@ void drawFace(String expression) {
 }
 
 // ==========================================
-// 5. MOTOR & SERVO PRIMITIVES
+// 3. MOTOR & SERVO PRIMITIVES
 // ==========================================
 void stopRobot() {
     digitalWrite(MOTOR_L_F, LOW); digitalWrite(MOTOR_L_B, LOW);
@@ -170,15 +111,11 @@ long getDistance() {
     return duration * 0.034 / 2;
 }
 
-void executeCommand(String action, String expression, String speech) {
+void executeCommand(String action, String expression) {
     drawFace(expression);
     
-    // Play speech sound effects through onboard 3W speaker via MAX98357A
-    int syllables = max(3, (int)(speech.length() / 4));
-    playSpeakingEffect(min(syllables, 12));
-    
     actionStartTime = millis();
-    actionDuration = 1200; // Pulse move for 1.2s
+    actionDuration = 1200; // Pulse move duration in ms
 
     if (action == "FORWARD") {
         moveForward();
@@ -206,314 +143,15 @@ void executeCommand(String action, String expression, String speech) {
 }
 
 // ==========================================
-// 6. WEBSOCKET PARSER
-// ==========================================
-void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
-    if (type == WStype_TEXT) {
-        String msg = String((char*)payload);
-        StaticJsonDocument<512> doc;
-        DeserializationError error = deserializeJson(doc, msg);
-        if (!error) {
-            String action = doc["action"] | "NONE";
-            String expression = doc["expression"] | "NORMAL";
-            String speech = doc["speech"] | "";
-            executeCommand(action, expression, speech);
-        }
-    }
-}
-
-// ==========================================
-// 7. WEBPAGE
-// ==========================================
-void handleRoot() {
-    String html = R"rawliteral(
-<!DOCTYPE html>
-<html>
-<head>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ESP32 AI Companion</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #121212; color: #fff; text-align: center; margin: 0; padding: 20px; }
-    h2 { margin-bottom: 4px; color: #f55036; }
-    .card { background: #1E1E1E; border-radius: 12px; padding: 16px; margin: 14px auto; max-width: 440px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
-    input[type=password], input[type=text], select { width: calc(100% - 24px); padding: 12px; margin: 8px 0; border: 1px solid #333; border-radius: 8px; background: #2A2A2A; color: #fff; font-size: 15px; }
-    button { background: #f55036; border: none; color: #fff; padding: 12px 18px; font-size: 16px; border-radius: 8px; cursor: pointer; font-weight: bold; }
-    button.mic-btn { background: #E94560; font-size: 18px; padding: 18px; border-radius: 50px; width: 85%; margin: 15px auto; display: block; }
-    .status { color: #888; font-size: 13px; margin-top: 6px; }
-    .log-box { text-align: left; background: #000; padding: 12px; border-radius: 8px; height: 130px; overflow-y: auto; font-family: monospace; font-size: 13px; color: #00ff88; margin-top: 10px; }
-  </style>
-</head>
-<body>
-  <h2>⚡ Robot AI Brain (Groq LPU)</h2>
-  <div class="status" id="ws-status">Connecting to Robot...</div>
-
-  <div class="card">
-    <input type="password" id="groqKey" placeholder="Paste Groq Key (gsk_...)">
-    <select id="modelSelect">
-      <option value="">Paste key and click below to load models</option>
-    </select>
-    <button style="width: 100%;" onclick="saveKeyAndFetchModels()">Save Key & Load Models</button>
-  </div>
-
-  <div class="card">
-    <button class="mic-btn" id="micBtn" onclick="toggleListening()">🎙️ TAP TO TALK</button>
-    <div style="margin: 10px 0; color: #888;">— OR TYPE —</div>
-    <div style="display: flex; gap: 8px;">
-      <input type="text" id="textPrompt" placeholder="Ask anything or command robot..." onkeydown="if(event.key==='Enter') sendTextPrompt()">
-      <button onclick="sendTextPrompt()">Send</button>
-    </div>
-    <div class="status" id="speech-status">Ready</div>
-  </div>
-
-  <div class="card">
-    <div style="font-weight: bold; margin-bottom: 6px;">Live Interaction Feed</div>
-    <div class="log-box" id="logBox">System initialized...</div>
-  </div>
-
-<script>
-  let ws;
-  let recognition;
-  let isListening = false;
-
-  function initWebSocket() {
-    ws = new WebSocket('ws://' + location.hostname + ':81/');
-    ws.onopen = () => { document.getElementById('ws-status').innerText = '🟢 Connected to ESP32'; };
-    ws.onclose = () => { 
-      document.getElementById('ws-status').innerText = '🔴 Disconnected. Reconnecting...'; 
-      setTimeout(initWebSocket, 2000); 
-    };
-  }
-  initWebSocket();
-
-  function log(msg) {
-    const b = document.getElementById('logBox');
-    b.innerHTML += '<br>> ' + msg;
-    b.scrollTop = b.scrollHeight;
-  }
-
-  async function fetchModels(apiKey) {
-    const sel = document.getElementById('modelSelect');
-    sel.innerHTML = '<option value="">Querying Groq models...</option>';
-    try {
-      const res = await fetch("https://api.groq.com/openai/v1/models", {
-        headers: { "Authorization": "Bearer " + apiKey }
-      });
-      const data = await res.json();
-      if (data.data && Array.isArray(data.data)) {
-        sel.innerHTML = '';
-        const models = data.data
-          .map(m => m.id)
-          .filter(id => !id.includes('whisper') && !id.includes('guard') && !id.includes('tts'));
-        
-        models.forEach(id => {
-          const opt = document.createElement('option');
-          opt.value = id;
-          opt.innerText = id;
-          sel.appendChild(opt);
-        });
-
-        const savedModel = localStorage.getItem('GROQ_SELECTED_MODEL');
-        if (savedModel && models.includes(savedModel)) {
-          sel.value = savedModel;
-        }
-        log('Loaded ' + models.length + ' available Groq models.');
-      } else {
-        throw new Error(data.error ? data.error.message : 'Invalid model list format');
-      }
-    } catch(e) {
-      sel.innerHTML = '<option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile</option>';
-      log('Model query notice: ' + e.message);
-    }
-  }
-
-  function saveKeyAndFetchModels() {
-    const k = document.getElementById('groqKey').value.trim();
-    if (k) {
-      localStorage.setItem('GROQ_API_KEY', k);
-      alert('Key Saved! Querying active models...');
-      fetchModels(k);
-    }
-  }
-
-  document.getElementById('modelSelect').addEventListener('change', (e) => {
-    localStorage.setItem('GROQ_SELECTED_MODEL', e.target.value);
-  });
-
-  window.onload = () => {
-    const savedKey = localStorage.getItem('GROQ_API_KEY');
-    if (savedKey) {
-      document.getElementById('groqKey').value = savedKey;
-      fetchModels(savedKey);
-    }
-  };
-
-  async function queryAI(userText) {
-    const apiKey = localStorage.getItem('GROQ_API_KEY');
-    const selectedModel = document.getElementById('modelSelect').value;
-
-    if (!apiKey) {
-      alert('Please paste and save your Groq API key first!');
-      return;
-    }
-    if (!selectedModel) {
-      alert('Please click "Save Key & Load Models" to select a model.');
-      return;
-    }
-    
-    document.getElementById('speech-status').innerText = 'Thinking (' + selectedModel + ')...';
-    log('You: ' + userText);
-
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ action: "NONE", expression: "LISTEN", speech: "" }));
-    }
-
-    const systemPrompt = `You are a real-world exhibition robot.
-CRITICAL INSTRUCTION: You must reply ONLY with a raw JSON object. Do not include markdown codeblocks (no \`\`\`json). Do not write ANY explanatory words before or after.
-Format:
-{
-  "action": "NONE",
-  "expression": "HAPPY",
-  "speech": "Your short reply here."
-}
-Action options: FORWARD, BACKWARD, LEFT, RIGHT, WAVE, STOP, AUTO, NONE.
-Expression options: HAPPY, SCARED, SURPRISED, TALK, NORMAL.`;
-
-    try {
-      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": "Bearer " + apiKey
-        },
-        body: JSON.stringify({
-          model: selectedModel,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userText }
-          ],
-          temperature: 0.5,
-          max_tokens: 150
-        })
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error ? data.error.message : ("HTTP Error " + response.status));
-      }
-
-      if (!data.choices || !data.choices[0] || !data.choices[0].message) {
-        throw new Error("Invalid response format received from Groq");
-      }
-
-      let content = data.choices[0].message.content.trim();
-      const match = content.match(/\{[\s\S]*\}/);
-      if (!match) {
-        throw new Error("Model failed to output a JSON structure: " + content);
-      }
-      
-      const parsed = JSON.parse(match[0]);
-
-      log('Robot: ' + parsed.speech);
-      document.getElementById('speech-status').innerText = 'Ready';
-
-      // Send the speech, action, and expression to the ESP32
-      // The ESP32's onboard MAX98357A speaker will emit the audio response
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ 
-          action: parsed.action, 
-          expression: parsed.expression,
-          speech: parsed.speech 
-        }));
-      }
-
-    } catch (err) {
-      log('Error: ' + err.message);
-      document.getElementById('speech-status').innerText = 'Failed';
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ action: "NONE", expression: "NORMAL", speech: "" }));
-      }
-    }
-  }
-
-  function resetMicButton() {
-    isListening = false;
-    const btn = document.getElementById('micBtn');
-    btn.innerText = '🎙️ TAP TO TALK';
-    btn.style.background = '#E94560';
-  }
-
-  function initSpeech() {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      alert('Speech recognition not supported in this browser. Please use Chrome on Android.');
-      return;
-    }
-    
-    recognition = new SpeechRecognition();
-    recognition.lang = 'en-US';
-    recognition.interimResults = false;
-    recognition.continuous = false;
-
-    recognition.onstart = () => {
-      isListening = true;
-      const btn = document.getElementById('micBtn');
-      btn.innerText = '🛑 LISTENING... TAP TO STOP';
-      btn.style.background = '#00ADB5';
-      document.getElementById('speech-status').innerText = 'Listening...';
-    };
-
-    recognition.onresult = (e) => {
-      const transcript = e.results[0][0].transcript;
-      queryAI(transcript);
-    };
-
-    recognition.onerror = (e) => {
-      document.getElementById('speech-status').innerText = 'Audio capture error';
-      resetMicButton();
-    };
-
-    recognition.onend = () => {
-      resetMicButton();
-    };
-  }
-
-  function toggleListening() {
-    if (!recognition) initSpeech();
-    if (!recognition) return;
-
-    if (isListening) {
-      recognition.stop();
-    } else {
-      recognition.start();
-    }
-  }
-
-  function sendTextPrompt() {
-    const input = document.getElementById('textPrompt');
-    if (input.value.trim() !== '') {
-      queryAI(input.value.trim());
-      input.value = '';
-    }
-  }
-</script>
-</body>
-</html>
-)rawliteral";
-
-    server.send(200, "text/html", html);
-}
-
-// ==========================================
-// 8. SETUP INITIALIZATION
+// 4. SETUP INITIALIZATION
 // ==========================================
 void setup() {
+    // 115200 Baud Hardware USB Serial link
     Serial.begin(115200);
 
-    // Standard Hardware I2C (SDA = 21, SCL = 22)
+    // Standard I2C: SDA on 21, SCL on 22
     Wire.begin(21, 22);
     if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-        Serial.println("SSD1306 OLED init failed");
         for(;;);
     }
     display.clearDisplay();
@@ -535,7 +173,7 @@ void setup() {
     leftArm.write(90);
     rightArm.write(90);
 
-    // MAX98357A I2S Setup
+    // MAX98357A I2S Setup (16 kHz, 16-Bit Mono/Stereo)
     i2s_config_t i2s_config = {
         .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
         .sample_rate = 16000,
@@ -544,7 +182,7 @@ void setup() {
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
         .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
         .dma_buf_count = 8,
-        .dma_buf_len = 64,
+        .dma_buf_len = 128,
         .use_apll = false
     };
     i2s_pin_config_t pin_config = {
@@ -556,52 +194,63 @@ void setup() {
     i2s_driver_install(I2S_NUM, &i2s_config, 0, NULL);
     i2s_set_pin(I2S_NUM, &pin_config);
 
-    // Wi-Fi Hotspot Connection
-    WiFi.begin(ssid, password);
     display.clearDisplay();
-    display.setCursor(0, 10);
-    display.println("Connecting Hotspot...");
+    display.setCursor(10, 25);
+    display.println("USB SERIAL READY");
     display.display();
-    
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(400);
-        Serial.print(".");
-    }
-
-    display.clearDisplay();
-    display.setCursor(0, 5);
-    display.println("CONNECTED!");
-    display.println("\nOpen IP on Phone:");
-    display.println(WiFi.localIP().toString());
-    display.display();
-
-    // Start Web & WebSocket Servers
-    server.on("/", handleRoot);
-    server.begin();
-    webSocket.begin();
-    webSocket.onEvent(webSocketEvent);
-
-    playChirp(true);
-    delay(2000);
+    delay(1500);
     drawFace("HAPPY");
 }
 
 // ==========================================
-// 9. MAIN CONTROL LOOP
+// 5. MAIN CONTROL LOOP (SERIAL PARSING)
 // ==========================================
 void loop() {
-    server.handleClient();
-    webSocket.loop();
+    // 1. Process Incoming Serial Data from PC
+    if (Serial.available()) {
+        String header = Serial.readStringUntil('\n');
+        header.trim();
 
-    // Timed Manual Actions
+        // Format: CMD:ACTION,EXPRESSION
+        if (header.startsWith("CMD:")) {
+            int commaIndex = header.indexOf(',');
+            if (commaIndex > 0) {
+                String action = header.substring(4, commaIndex);
+                String expression = header.substring(commaIndex + 1);
+                executeCommand(action, expression);
+            }
+        } 
+        // Format: AUDIO:LENGTH_IN_BYTES
+        else if (header.startsWith("AUDIO:")) {
+            int audioSize = header.substring(6).toInt();
+            drawFace("TALK");
+
+            uint8_t buffer[512];
+            int totalBytesRead = 0;
+
+            while (totalBytesRead < audioSize) {
+                int toRead = min((int)sizeof(buffer), audioSize - totalBytesRead);
+                int bytesRead = Serial.readBytes(buffer, toRead);
+                if (bytesRead > 0) {
+                    size_t bytes_written;
+                    i2s_write(I2S_NUM, buffer, bytesRead, &bytes_written, portMAX_DELAY);
+                    totalBytesRead += bytesRead;
+                }
+            }
+            drawFace("NORMAL");
+        }
+    }
+
+    // 2. Timed Manual Movement Pulse Reset
     if (!autonomousMode) {
         if (actionDuration > 0 && (millis() - actionStartTime >= actionDuration)) {
             stopRobot();
             actionDuration = 0;
             drawFace("NORMAL");
         }
-    } else {
-        // Obstacle avoidance in Autonomous mode
+    } 
+    // 3. Autonomous Obstacle Avoidance
+    else {
         static unsigned long lastCheck = 0;
         if (millis() - lastCheck > 120) {
             lastCheck = millis();
@@ -609,7 +258,6 @@ void loop() {
             if (dist < 22) {
                 stopRobot();
                 drawFace("SCARED");
-                playTone(300, 150);
                 moveBackward();
                 delay(350);
                 turnRight();
