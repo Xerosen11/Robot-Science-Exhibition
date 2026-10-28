@@ -11,8 +11,8 @@
 // ==========================================
 // 1. WI-FI HOTSPOT CREDENTIALS
 // ==========================================
-const char* ssid     = "YOUR_PHONE_HOTSPOT"; 
-const char* password = "YOUR_HOTSPOT_PASSWORD";   
+const char* ssid     = "Realme 8 5G"; 
+const char* password = "12345678";   
 
 WebServer server(80);
 WebSocketsServer webSocket = WebSocketsServer(81);
@@ -52,7 +52,7 @@ unsigned long actionStartTime = 0;
 unsigned long actionDuration = 0;
 
 // ==========================================
-// 3. SOUND SYNTHESIS (MAX98357A)
+// 3. SOUND SYNTHESIS (MAX98357A SPEAKER)
 // ==========================================
 void playTone(uint32_t frequency, uint32_t duration_ms) {
     size_t bytes_written;
@@ -63,7 +63,7 @@ void playTone(uint32_t frequency, uint32_t duration_ms) {
     if (!sample_buffer) return;
 
     for (uint32_t i = 0; i < half_period * 2; i++) {
-        sample_buffer[i] = (i < half_period) ? 5000 : -5000;
+        sample_buffer[i] = (i < half_period) ? 6000 : -6000;
     }
 
     unsigned long start_time = millis();
@@ -84,6 +84,16 @@ void playChirp(bool positive) {
     } else {
         playTone(400, 100);
         playTone(250, 150);
+    }
+}
+
+// Robot Robotic Voice Simulation (R2-D2 style chirps when talking)
+void playSpeakingEffect(int syllables) {
+    for (int i = 0; i < syllables; i++) {
+        uint32_t freq = random(400, 1400);
+        uint32_t dur = random(60, 130);
+        playTone(freq, dur);
+        delay(20);
     }
 }
 
@@ -160,9 +170,12 @@ long getDistance() {
     return duration * 0.034 / 2;
 }
 
-void executeCommand(String action, String expression) {
+void executeCommand(String action, String expression, String speech) {
     drawFace(expression);
-    playChirp(true);
+    
+    // Play speech sound effects through onboard 3W speaker via MAX98357A
+    int syllables = max(3, (int)(speech.length() / 4));
+    playSpeakingEffect(min(syllables, 12));
     
     actionStartTime = millis();
     actionDuration = 1200; // Pulse move for 1.2s
@@ -198,18 +211,19 @@ void executeCommand(String action, String expression) {
 void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
     if (type == WStype_TEXT) {
         String msg = String((char*)payload);
-        StaticJsonDocument<256> doc;
+        StaticJsonDocument<512> doc;
         DeserializationError error = deserializeJson(doc, msg);
         if (!error) {
             String action = doc["action"] | "NONE";
             String expression = doc["expression"] | "NORMAL";
-            executeCommand(action, expression);
+            String speech = doc["speech"] | "";
+            executeCommand(action, expression, speech);
         }
     }
 }
 
 // ==========================================
-// 7. WEBPAGE & BULLETPROOF GROQ PARSER
+// 7. WEBPAGE
 // ==========================================
 void handleRoot() {
     String html = R"rawliteral(
@@ -307,6 +321,7 @@ void handleRoot() {
         throw new Error(data.error ? data.error.message : 'Invalid model list format');
       }
     } catch(e) {
+      sel.innerHTML = '<option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile</option>';
       log('Model query notice: ' + e.message);
     }
   }
@@ -332,16 +347,6 @@ void handleRoot() {
     }
   };
 
-  function speakText(text) {
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.pitch = 1.05;
-      utterance.rate = 1.05;
-      window.speechSynthesis.speak(utterance);
-    }
-  }
-
   async function queryAI(userText) {
     const apiKey = localStorage.getItem('GROQ_API_KEY');
     const selectedModel = document.getElementById('modelSelect').value;
@@ -359,7 +364,7 @@ void handleRoot() {
     log('You: ' + userText);
 
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ action: "NONE", expression: "LISTEN" }));
+      ws.send(JSON.stringify({ action: "NONE", expression: "LISTEN", speech: "" }));
     }
 
     const systemPrompt = `You are a real-world exhibition robot.
@@ -402,8 +407,6 @@ Expression options: HAPPY, SCARED, SURPRISED, TALK, NORMAL.`;
       }
 
       let content = data.choices[0].message.content.trim();
-      
-      // Extract pure JSON object even if the model wraps it with markdown fences or text
       const match = content.match(/\{[\s\S]*\}/);
       if (!match) {
         throw new Error("Model failed to output a JSON structure: " + content);
@@ -414,17 +417,21 @@ Expression options: HAPPY, SCARED, SURPRISED, TALK, NORMAL.`;
       log('Robot: ' + parsed.speech);
       document.getElementById('speech-status').innerText = 'Ready';
 
+      // Send the speech, action, and expression to the ESP32
+      // The ESP32's onboard MAX98357A speaker will emit the audio response
       if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ action: parsed.action, expression: parsed.expression }));
+        ws.send(JSON.stringify({ 
+          action: parsed.action, 
+          expression: parsed.expression,
+          speech: parsed.speech 
+        }));
       }
-
-      speakText(parsed.speech);
 
     } catch (err) {
       log('Error: ' + err.message);
       document.getElementById('speech-status').innerText = 'Failed';
       if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ action: "NONE", expression: "NORMAL" }));
+        ws.send(JSON.stringify({ action: "NONE", expression: "NORMAL", speech: "" }));
       }
     }
   }
