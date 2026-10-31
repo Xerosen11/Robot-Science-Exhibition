@@ -1,0 +1,56 @@
+#include <ESP32Servo.h>
+
+Servo myServo;
+
+// Connect the servo signal wire to this pin
+const int SERVO_PIN = 18; 
+
+// Standard pulse limits
+const int MIN_MICROS = 500;   
+const int MAX_MICROS = 2400;  
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  // Allocate hardware PWM timers
+  ESP32PWM::allocateTimer(0);
+  ESP32PWM::allocateTimer(1);
+  ESP32PWM::allocateTimer(2);
+  ESP32PWM::allocateTimer(3);
+
+  // Standard analog servos run at 50Hz
+  myServo.setPeriodHertz(50);
+  
+  // Attach with calibration pulse limits
+  myServo.attach(SERVO_PIN, MIN_MICROS, MAX_MICROS);
+
+  Serial.println("\n--- Manual Servo Control Ready ---");
+  Serial.println("Type an angle (0 to 180) and press Enter.");
+  
+  // Move to center by default on startup
+  goToAngle(90);
+}
+
+void loop() {
+  // Check if you have typed anything into the Serial Monitor
+  if (Serial.available() > 0) {
+    int targetAngle = Serial.parseInt();
+    
+    // Clear out any trailing newline characters
+    while (Serial.available() > 0) { Serial.read(); }
+
+    // Validate the input and move the servo
+    if (targetAngle >= 0 && targetAngle <= 180) {
+      goToAngle(targetAngle);
+    } else {
+      Serial.println("Invalid input. Please enter a value between 0 and 180.");
+    }
+  }
+}
+
+void goToAngle(int angle) {
+  myServo.write(angle);
+  int pulse = myServo.readMicroseconds();
+  Serial.printf("Moved to: %d deg | Pulse Width: %d us\n", angle, pulse);
+}
